@@ -1,0 +1,19 @@
+# Rules for SQF -> report conversion
+# header: pattern to detect and header text to emit
+header:
+  - match: 'TOS_COM'
+    text: '0.1 TOS_COM'
+
+# send_command: pattern and output format
+send_command:
+  pattern: '^C\s+(?P<name>[A-Za-z0-9_]+)\s*(?:;\s*(?P<text>.*))?$'
+  format: '        {name}     {text}'
+
+# verify: pattern and output format
+verify:
+  pattern: '(?P<var>[A-Za-z0-9_]+)\s*=\s*(?P<val>[A-Za-z0-9_]+)\s*(?:;\s*(?P<label>.*))?$'
+  format: '            {var}: state :: Cnt {label} := {val} '
+
+# titles: lines to ignore or treat as headers
+titles:
+  - '^vehicle\s+'

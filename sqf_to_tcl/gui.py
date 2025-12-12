@@ -14,6 +14,7 @@ Features:
 from __future__ import annotations
 import sys
 import re
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -53,8 +54,9 @@ class CodeEditor(QPlainTextEdit):
         self.language = language
         self.line_number_area = LineNumberArea(self)
         
-        # Font setup
-        font = QFont("Consolas", 11)
+        # Font setup with zoom support
+        self.base_font_size = 11
+        font = QFont("Consolas", self.base_font_size)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.setFont(font)
         
@@ -163,6 +165,36 @@ class CodeEditor(QPlainTextEdit):
         line = cursor.blockNumber() + 1
         col = cursor.columnNumber() + 1
         return line, col
+    
+    def zoom_in(self):
+        """Increase font size (zoom in)."""
+        current_size = self.font().pointSize()
+        new_size = min(current_size + 1, 24)  # Max 24pt
+        font = self.font()
+        font.setPointSize(new_size)
+        self.setFont(font)
+        return new_size
+    
+    def zoom_out(self):
+        """Decrease font size (zoom out)."""
+        current_size = self.font().pointSize()
+        new_size = max(current_size - 1, 8)  # Min 8pt
+        font = self.font()
+        font.setPointSize(new_size)
+        self.setFont(font)
+        return new_size
+    
+    def zoom_reset(self):
+        """Reset font size to default."""
+        font = self.font()
+        font.setPointSize(self.base_font_size)
+        self.setFont(font)
+        return self.base_font_size
+    
+    def get_zoom_percentage(self):
+        """Get current zoom percentage."""
+        current_size = self.font().pointSize()
+        return int((current_size / self.base_font_size) * 100)
 
 
 class SQFSyntaxHighlighter(QSyntaxHighlighter):
@@ -548,14 +580,87 @@ class SQFtoTCLApp(QMainWindow):
         self.input_path: Optional[str] = None
         self.output_path: Optional[str] = None
         self.rules_path: Optional[str] = None
+        self.db_path: Optional[str] = None
         self.find_replace_dialog: Optional[FindReplaceDialog] = None
+        self.config_file = self._get_config_path()
+        self._config_loaded = False  # Flag to prevent saving during initialization
         self.init_ui()
         self.apply_dark_theme()
+        # Load config after UI is fully initialized
+        self.load_config()
+        self._config_loaded = True  # Now allow saving
+    
+    def _get_config_path(self) -> Path:
+        """Get path to configuration file."""
+        # Try to use project directory first, fallback to user home
+        try:
+            project_dir = Path(__file__).resolve().parent.parent
+            config_path = project_dir / "sqf_converter_config.json"
+            return config_path
+        except Exception:
+            # Fallback to user home directory
+            from os.path import expanduser
+            home = Path(expanduser("~"))
+            return home / ".sqf_converter_config.json"
+    
+    def save_config(self) -> None:
+        """Save current configuration to file."""
+        if not self._config_loaded:
+            # Don't save during initialization
+            return
+        try:
+            config = {
+                "db_path": self.db_path,
+                "rules_path": self.rules_path,
+                "report_mode": self.report_checkbox.isChecked() if hasattr(self, 'report_checkbox') else True
+            }
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+        except Exception:
+            # Silently fail if config can't be saved
+            pass
+    
+    def load_config(self) -> None:
+        """Load configuration from file."""
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    
+                # Load database path if it exists and file is still valid
+                if config.get("db_path"):
+                    db_path = config["db_path"]
+                    if Path(db_path).exists():
+                        self.db_path = db_path
+                        if hasattr(self, 'status_label'):
+                            self.status_label.setText(f"Database auto-loaded: {Path(db_path).name}")
+                    else:
+                        # File doesn't exist anymore, remove from config
+                        config["db_path"] = None
+                        with open(self.config_file, 'w', encoding='utf-8') as f:
+                            json.dump(config, f, indent=2)
+                
+                # Load rules path if it exists
+                if config.get("rules_path") and Path(config["rules_path"]).exists():
+                    self.rules_path = config["rules_path"]
+                
+                # Load report mode preference
+                if hasattr(self, 'report_checkbox') and "report_mode" in config:
+                    self.report_checkbox.setChecked(config["report_mode"])
+        except Exception:
+            # Silently fail if config can't be loaded
+            pass
 
     def init_ui(self):
         self.setWindowTitle('SQF to TCL Converter - IDE')
-        self.setMinimumSize(1200, 700)
+        self.setMinimumSize(1000, 600)
         self.resize(1400, 800)
+        
+        # Enable high DPI scaling
+        if hasattr(Qt, 'HighDpiScaleFactorRoundingPolicy'):
+            QApplication.setHighDpiScaleFactorRoundingPolicy(
+                Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+            )
 
         # Set application icon (uses icon.ico located in project root)
         try:
@@ -582,7 +687,7 @@ class SQFtoTCLApp(QMainWindow):
         splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #2d2d30;
-                width: 4px;
+                width: 10px;
             }
             QSplitter::handle:hover {
                 background-color: #3e3e3e;
@@ -600,8 +705,19 @@ class SQFtoTCLApp(QMainWindow):
         self.output_editor = output_panel.findChild(CodeEditor)
         self.output_editor.setReadOnly(True)
         splitter.addWidget(output_panel)
+        
+        # Setup keyboard shortcuts for zoom
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        zoom_in_shortcut = QShortcut(QKeySequence("Ctrl+="), self)
+        zoom_in_shortcut.activated.connect(self.zoom_in)
+        zoom_in_shortcut2 = QShortcut(QKeySequence("Ctrl++"), self)
+        zoom_in_shortcut2.activated.connect(self.zoom_in)
+        zoom_out_shortcut = QShortcut(QKeySequence("Ctrl+-"), self)
+        zoom_out_shortcut.activated.connect(self.zoom_out)
+        zoom_reset_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
+        zoom_reset_shortcut.activated.connect(self.zoom_reset)
 
-        splitter.setSizes([700, 700])
+        splitter.setSizes([900, 900])
         main_layout.addWidget(splitter, stretch=1)
 
         # Status bar
@@ -616,63 +732,67 @@ class SQFtoTCLApp(QMainWindow):
         main_layout.addWidget(self.status_label)
 
     def create_toolbar(self) -> QFrame:
-        """Create the top toolbar with buttons."""
+        """Create the top toolbar with buttons - compact and responsive."""
         toolbar = QFrame()
         toolbar.setStyleSheet("""
             QFrame {
                 background-color: #252526;
                 border-radius: 6px;
-                padding: 12px;
+                padding: 8px;
             }
         """)
+        
+        # Horizontal layout for buttons
         layout = QHBoxLayout(toolbar)
         layout.setSpacing(8)
+        layout.setContentsMargins(6, 6, 6, 6)
 
-        # File operations
+        # File operations - Load File (selects and loads in one click)
         file_label = QLabel("File:")
-        file_label.setStyleSheet("color: #cccccc; font-weight: 500;")
+        file_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 35px;")
+        file_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         layout.addWidget(file_label)
 
-        self.btn_browse_input = ModernButton("Browse Input")
-        self.btn_browse_input.clicked.connect(self.browse_input)
-        layout.addWidget(self.btn_browse_input)
-
-        self.btn_browse_output = ModernButton("Browse Output")
-        self.btn_browse_output.clicked.connect(self.browse_output)
-        layout.addWidget(self.btn_browse_output)
-
-        self.btn_load_input = SecondaryButton("Load File")
+        self.btn_load_input = ModernButton("Load File")
+        self.btn_load_input.setMinimumWidth(85)
+        self.btn_load_input.setMaximumWidth(100)
         self.btn_load_input.clicked.connect(self.load_input_file)
         layout.addWidget(self.btn_load_input)
 
-        layout.addSpacing(16)
+    
 
         # Editor operations
         editor_label = QLabel("Editor:")
-        editor_label.setStyleSheet("color: #cccccc; font-weight: 500;")
+        editor_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 45px;")
+        editor_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         layout.addWidget(editor_label)
 
-        self.btn_find_replace = SecondaryButton("Find/Replace")
+        self.btn_find_replace = SecondaryButton("Find & Replace")
+        self.btn_find_replace.setMinimumWidth(95)
+        self.btn_find_replace.setMaximumWidth(110)
         self.btn_find_replace.clicked.connect(self.show_find_replace)
         layout.addWidget(self.btn_find_replace)
 
-        layout.addSpacing(16)
+      
 
         # Conversion operations
         convert_label = QLabel("Convert:")
-        convert_label.setStyleSheet("color: #cccccc; font-weight: 500;")
+        convert_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 55px;")
+        convert_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         layout.addWidget(convert_label)
 
-        self.report_checkbox = QCheckBox("Report Mode")
+        self.report_checkbox = QCheckBox("Report")
         self.report_checkbox.setChecked(True)
+        self.report_checkbox.toggled.connect(self.save_config)
         self.report_checkbox.setStyleSheet("""
             QCheckBox {
                 color: #cccccc;
-                spacing: 6px;
+                spacing: 5px;
+                font-size: 11px;
             }
             QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
+                width: 14px;
+                height: 14px;
                 border: 2px solid #3e3e3e;
                 border-radius: 3px;
                 background-color: #1e1e1e;
@@ -694,7 +814,7 @@ class SQFtoTCLApp(QMainWindow):
                 color: white;
                 border: none;
                 border-radius: 4px;
-                padding: 6px 16px;
+                padding: 5px 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
@@ -704,32 +824,77 @@ class SQFtoTCLApp(QMainWindow):
                 background-color: #0a5f0a;
             }
         """)
+        self.btn_convert.setMinimumWidth(80)
+        self.btn_convert.setMaximumWidth(100)
         self.btn_convert.clicked.connect(self.convert)
         layout.addWidget(self.btn_convert)
 
-        layout.addSpacing(16)
 
-        # Rules operations
-        rules_label = QLabel("Rules:")
-        rules_label.setStyleSheet("color: #cccccc; font-weight: 500;")
-        layout.addWidget(rules_label)
+        # Configuration group
+        config_label = QLabel("Config:")
+        config_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 45px;")
+        config_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        layout.addWidget(config_label)
 
-        self.btn_load_rules = SecondaryButton("Load Rules")
+        self.btn_load_rules = SecondaryButton("Rules")
+        self.btn_load_rules.setMinimumWidth(75)
+        self.btn_load_rules.setMaximumWidth(100)
         self.btn_load_rules.clicked.connect(self.load_rules)
         layout.addWidget(self.btn_load_rules)
 
-        self.btn_save_rules = SecondaryButton("Save Rules")
-        self.btn_save_rules.clicked.connect(self.save_rules)
-        layout.addWidget(self.btn_save_rules)
+        self.btn_load_db = SecondaryButton("DB")
+        self.btn_load_db.setMinimumWidth(75)
+        self.btn_load_db.setMaximumWidth(100)
+        self.btn_load_db.clicked.connect(self.load_database)
+        layout.addWidget(self.btn_load_db)
 
-        layout.addSpacing(16)
 
-        # Output operations
-        self.btn_save_output = ModernButton("Save Output")
+        # Output operations - Save (like Word) and Save As
+        output_label = QLabel("Output:")
+        output_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 50px;")
+        output_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        layout.addWidget(output_label)
+
+        self.btn_save_output = ModernButton("Save")
+        self.btn_save_output.setMinimumWidth(70)
+        self.btn_save_output.setMaximumWidth(85)
         self.btn_save_output.clicked.connect(self.save_output_file)
         layout.addWidget(self.btn_save_output)
 
+        self.btn_save_output_as = SecondaryButton("Save As")
+        self.btn_save_output_as.setMinimumWidth(70)
+        self.btn_save_output_as.setMaximumWidth(85)
+        self.btn_save_output_as.clicked.connect(self.save_output_as)
+        layout.addWidget(self.btn_save_output_as)
+
         layout.addStretch()
+
+        # Zoom controls (right side)
+        zoom_label = QLabel("Zoom:")
+        zoom_label.setStyleSheet("color: #cccccc; font-weight: 500; min-width: 40px;")
+        zoom_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        layout.addWidget(zoom_label)
+
+        self.btn_zoom_out = SecondaryButton("−")
+        self.btn_zoom_out.setMinimumWidth(35)
+        self.btn_zoom_out.setMaximumWidth(40)
+        self.btn_zoom_out.setToolTip("Zoom Out (Ctrl+-)")
+        self.btn_zoom_out.clicked.connect(self.zoom_out)
+        layout.addWidget(self.btn_zoom_out)
+
+        self.btn_zoom_reset = SecondaryButton("100%")
+        self.btn_zoom_reset.setMinimumWidth(50)
+        self.btn_zoom_reset.setMaximumWidth(60)
+        self.btn_zoom_reset.setToolTip("Reset Zoom (Ctrl+0)")
+        self.btn_zoom_reset.clicked.connect(self.zoom_reset)
+        layout.addWidget(self.btn_zoom_reset)
+
+        self.btn_zoom_in = SecondaryButton("+")
+        self.btn_zoom_in.setMinimumWidth(35)
+        self.btn_zoom_in.setMaximumWidth(40)
+        self.btn_zoom_in.setToolTip("Zoom In (Ctrl++)")
+        self.btn_zoom_in.clicked.connect(self.zoom_in)
+        layout.addWidget(self.btn_zoom_in)
 
         return toolbar
 
@@ -800,40 +965,22 @@ class SQFtoTCLApp(QMainWindow):
         self.find_replace_dialog.raise_()
         self.find_replace_dialog.activateWindow()
 
-    def browse_input(self) -> None:
+    def load_input_file(self) -> None:
+        """Load input file - selects and loads in one click."""
         path, _ = QFileDialog.getOpenFileName(
             self,
-            'Select SQF file',
+            'Select and Load SQF file',
             '',
             'SQF files (*.sqf);;All files (*.*)'
         )
-        if path:
-            self.input_path = path
-            self.status_label.setText(f"Input file selected: {Path(path).name}")
-
-    def browse_output(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            'Save TCL file',
-            '',
-            'TCL files (*.tcl);;All files (*.*)'
-        )
-        if path:
-            self.output_path = path
-            self.status_label.setText(f"Output file selected: {Path(path).name}")
-
-    def load_input_file(self) -> None:
-        if not self.input_path:
-            QMessageBox.information(
-                self,
-                'No Input File',
-                'Please select an input .sqf file first.'
-            )
+        if not path:
             return
+        
         try:
-            text = Path(self.input_path).read_text(encoding='utf-8')
+            text = Path(path).read_text(encoding='utf-8')
             self.input_editor.setPlainText(text)
-            self.status_label.setText(f"Loaded: {Path(self.input_path).name}")
+            self.input_path = path
+            self.status_label.setText(f"Loaded: {Path(path).name}")
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -855,7 +1002,8 @@ class SQFtoTCLApp(QMainWindow):
             out = convert_sqf_string_to_tcl(
                 src,
                 report=report_mode,
-                rules_path=self.rules_path
+                rules_path=self.rules_path,
+                db_path=self.db_path
             )
             self.output_editor.setPlainText(out)
             self.status_label.setText("Conversion completed successfully")
@@ -879,7 +1027,8 @@ class SQFtoTCLApp(QMainWindow):
             text = Path(path).read_text(encoding='utf-8')
             self.input_editor.setPlainText(text)
             self.rules_path = path
-            self.status_label.setText(f"Loaded rules: {Path(path).name}")
+            self.save_config()  # Save to cache
+            self.status_label.setText(f"Loaded rules: {Path(path).name} (cached)")
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -901,6 +1050,7 @@ class SQFtoTCLApp(QMainWindow):
         try:
             text = self.input_editor.toPlainText()
             Path(self.rules_path).write_text(text, encoding='utf-8')
+            self.save_config()  # Update cache
             self.status_label.setText(f"Saved rules: {Path(self.rules_path).name}")
         except Exception as e:
             QMessageBox.critical(
@@ -909,7 +1059,49 @@ class SQFtoTCLApp(QMainWindow):
                 f'Failed to save rules file:\n{e}'
             )
 
+    def load_database(self) -> None:
+        """Load argument database from .txt file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Select argument database file',
+            '',
+            'Text files (*.txt);;All files (*.*)'
+        )
+        if not path:
+            return
+        try:
+            # Verify file format by reading first few lines
+            with open(path, 'r', encoding='utf-8') as f:
+                lines = [f.readline().strip() for _ in range(3)]
+                # Check if format looks correct (command priority argument)
+                valid = any(len(line.split()) >= 3 for line in lines if line)
+                if not valid and any(lines):
+                    QMessageBox.warning(
+                        self,
+                        'Format Warning',
+                        'File may not be in the expected format.\n'
+                        'Expected: <command> <priority> <argument>\n'
+                        'Example: CM00001 3 IRU_Drft_Bias'
+                    )
+            self.db_path = path
+            self.save_config()  # Save to cache
+            self.status_label.setText(f"Loaded database: {Path(path).name} (cached)")
+            QMessageBox.information(
+                self,
+                'Database Loaded',
+                f'Argument database loaded successfully:\n{Path(path).name}\n\n'
+                f'Commands will now use arguments from this database.\n'
+                f'Path has been saved and will auto-load on next startup.'
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                'Error',
+                f'Failed to load database file:\n{e}'
+            )
+
     def save_output_file(self) -> None:
+        """Save output - like Word Save: if no path, show dialog; if path exists, save directly."""
         text = self.output_editor.toPlainText()
         if not text.strip():
             QMessageBox.information(
@@ -919,6 +1111,7 @@ class SQFtoTCLApp(QMainWindow):
             )
             return
 
+        # If no path is set, show save dialog (like Save As)
         if not self.output_path:
             path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -930,20 +1123,70 @@ class SQFtoTCLApp(QMainWindow):
                 return
             self.output_path = path
 
+        # Save to the existing or newly selected path
         try:
             save_tcl_output(text, self.output_path)
             self.status_label.setText(f"Saved: {Path(self.output_path).name}")
-            QMessageBox.information(
-                self,
-                'Saved',
-                f'Output saved to:\n{self.output_path}'
-            )
         except Exception as e:
             QMessageBox.critical(
                 self,
                 'Save Error',
                 f'Failed to save output:\n{e}'
             )
+
+    def save_output_as(self) -> None:
+        """Save output to a different location (like Word Save As)."""
+        text = self.output_editor.toPlainText()
+        if not text.strip():
+            QMessageBox.information(
+                self,
+                'Empty Output',
+                'No output to save. Please convert first.'
+            )
+            return
+
+        # Always show dialog for Save As
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Save TCL file As',
+            self.output_path if self.output_path else '',
+            'TCL files (*.tcl);;All files (*.*)'
+        )
+        if not path:
+            return
+
+        try:
+            self.output_path = path
+            save_tcl_output(text, self.output_path)
+            self.status_label.setText(f"Saved as: {Path(self.output_path).name}")
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                'Save Error',
+                f'Failed to save output:\n{e}'
+            )
+    
+    def zoom_in(self) -> None:
+        """Zoom in both editors."""
+        zoom1 = self.input_editor.zoom_in()
+        zoom2 = self.output_editor.zoom_in()
+        # Update zoom reset button to show current zoom
+        zoom_pct = self.input_editor.get_zoom_percentage()
+        self.btn_zoom_reset.setText(f"{zoom_pct}%")
+    
+    def zoom_out(self) -> None:
+        """Zoom out both editors."""
+        zoom1 = self.input_editor.zoom_out()
+        zoom2 = self.output_editor.zoom_out()
+        # Update zoom reset button to show current zoom
+        zoom_pct = self.input_editor.get_zoom_percentage()
+        self.btn_zoom_reset.setText(f"{zoom_pct}%")
+    
+    def zoom_reset(self) -> None:
+        """Reset zoom to 100% for both editors."""
+        self.input_editor.zoom_reset()
+        self.output_editor.zoom_reset()
+        self.btn_zoom_reset.setText("100%")
 
 
 def run_gui() -> None:

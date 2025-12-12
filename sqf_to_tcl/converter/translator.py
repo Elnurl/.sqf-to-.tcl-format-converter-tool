@@ -12,6 +12,48 @@ from textwrap import indent
 from ..parser.sqf_parser import Node, parse_sqf
 
 
+def load_argument_database(db_path: str) -> dict:
+    """Load command argument definitions from a .txt database file.
+    
+    Expected format: <command_name> <priority_index> <argument_name>
+    Example: CM00001 3 IRU_Drft_Bias
+    
+    Returns: {cmd_name: {priority_index: arg_name}}
+    """
+    cmd_args = {}
+    db_file = Path(db_path)
+    
+    if not db_file.exists():
+        return cmd_args
+    
+    try:
+        with open(db_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Parse: CM00001 3 IRU_Drft_Bias
+                parts = line.split()
+                if len(parts) >= 3:
+                    cmd_name = parts[0]
+                    try:
+                        priority_idx = int(parts[1])
+                        arg_name = parts[2]
+                        
+                        if cmd_name not in cmd_args:
+                            cmd_args[cmd_name] = {}
+                        cmd_args[cmd_name][priority_idx] = arg_name
+                    except ValueError:
+                        # Skip invalid priority index
+                        continue
+    except Exception as e:
+        # Return empty dict on error, but could log warning
+        pass
+    
+    return cmd_args
+
+
 def _sqf_var_to_tcl(v: str) -> str:
     # Remove leading underscore if present and prefix with $ for expressions
     return ('$' + v.lstrip('_'))
@@ -101,7 +143,7 @@ def translate_text_block(text: str) -> str:
     return translate_nodes(nodes)
 
 
-def convert_sqf_string_to_tcl(source: str, debug: bool = False, report: bool | None = None, rules_path: str | None = None) -> str:
+def convert_sqf_string_to_tcl(source: str, debug: bool = False, report: bool | None = None, rules_path: str | None = None, db_path: str | None = None) -> str:
     # Auto-detect special TOS_COM-style files (report format) and convert to that
     # report override precedence: explicit report flag > provided rules file > auto-detect
     use_report = False
@@ -113,19 +155,21 @@ def convert_sqf_string_to_tcl(source: str, debug: bool = False, report: bool | N
         use_report = True
 
     if use_report:
-        return convert_sqf_to_report(source, rules_path)
+        return convert_sqf_to_report(source, rules_path, db_path)
 
     nodes = parse_sqf(source)
     return translate_nodes(nodes, debug=debug)
 
 
-def convert_sqf_to_report(source: str, rules_path: str | None = None) -> str:
+def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: str | None = None) -> str:
     """Convert company-style SQF/comments into the formatted report output.
 
     Rules implemented (from your example):
     - Lines containing 'TOS_COM' create a header '0.1 TOS_COM'
     - Lines starting with 'vehicle' are titles and ignored
     - Lines like 'C <name> ; <text>' become entries under 'Send commands'
+    - Lines like 'C CM00001 0x1 0xcf' parse command with priority-indexed arguments
+    - Lines like 'CM00001 3 IRU_Drft_Bias' define command arguments with priority indices
     - Lines containing 'VERIFY' and '=' become entries under 'Verify Telemetry' with
       format: '<var>: state :: Cnt <label> := <value>' where <label> is the comment after ';'
     - 'END' signals the end section
@@ -150,6 +194,11 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None) -> str:
             except Exception:
                 rules = None
 
+    # Load argument database if provided
+    cmd_args = {}
+    if db_path:
+        cmd_args = load_argument_database(db_path)
+    
     send_cmds = []
     verifies = []
     has_header = False
@@ -184,6 +233,18 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None) -> str:
         if ignored:
             continue
 
+        # Parse command argument definitions: CM00001 3 IRU_Drft_Bias
+        # Format: <command_name> <priority_index> <argument_name>
+        m_arg_def = re.match(r'^([A-Za-z0-9_]+)\s+(\d+)\s+([A-Za-z0-9_]+)\s*$', clean)
+        if m_arg_def:
+            cmd_name = m_arg_def.group(1)
+            priority_idx = int(m_arg_def.group(2))
+            arg_name = m_arg_def.group(3)
+            if cmd_name not in cmd_args:
+                cmd_args[cmd_name] = {}
+            cmd_args[cmd_name][priority_idx] = arg_name
+            continue
+
         # send command via rules or default C pattern
         handled = False
         if rules and 'send_command' in rules:
@@ -193,12 +254,43 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None) -> str:
                 fmt = rules['send_command'].get('format', '{name} {text}')
                 send_cmds.append(fmt.format(**m.groupdict()))
                 handled = True
+        
         if not handled:
-            m = re.match(r'^C\s+([A-Za-z0-9_]+)\s*(?:;\s*(.+))?$', line, re.I)
-            if m:
-                name = m.group(1)
-                comment = (m.group(2) or '').strip()
-                send_cmds.append((name, comment))
+            # Try to parse: C CM00001 0x1 0xcf (command with hex values)
+            # or: C CM00001 ; comment (simple command with comment)
+            m_cmd_with_values = re.match(r'^C\s+([A-Za-z0-9_]+)\s+(.+?)(?:\s*;\s*(.+))?$', line, re.I)
+            if m_cmd_with_values:
+                cmd_name = m_cmd_with_values.group(1)
+                values_part = m_cmd_with_values.group(2).strip()
+                comment = (m_cmd_with_values.group(3) or '').strip()
+                
+                # Extract hex values (0x1, 0xcf, etc.) or other values
+                values = re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|\S+)', values_part)
+                
+                if values and cmd_name in cmd_args:
+                    # Map values to arguments by priority index
+                    # Smaller index = higher priority = first value
+                    arg_assignments = []
+                    sorted_indices = sorted(cmd_args[cmd_name].keys())
+                    
+                    for i, value in enumerate(values):
+                        if i < len(sorted_indices):
+                            priority_idx = sorted_indices[i]
+                            arg_name = cmd_args[cmd_name][priority_idx]
+                            arg_assignments.append(f'{arg_name}={value}')
+                    
+                    # Format output: CM00001 IRU_Scale_Factor=0x1 ; RW_Speed=0xcf
+                    if arg_assignments:
+                        output = f'{cmd_name} {" ; ".join(arg_assignments)}'
+                        if comment:
+                            output += f' ; {comment}'
+                        send_cmds.append(output)
+                    else:
+                        # Fallback if no arguments matched
+                        send_cmds.append((cmd_name, comment))
+                else:
+                    # Simple command format: C CM00001 ; comment
+                    send_cmds.append((cmd_name, comment))
                 continue
 
         # verify
@@ -236,8 +328,11 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None) -> str:
             if isinstance(sc, tuple):
                 name, comment = sc
                 out_lines.append(f'        {name}     {comment}')
+            elif isinstance(sc, str):
+                # String format (e.g., "CM00001 IRU_Scale_Factor=0x1 ; RW_Speed=0xcf")
+                out_lines.append(f'        {sc}')
             else:
-                out_lines.append(sc)
+                out_lines.append(str(sc))
     if verifies:
         out_lines.append('    Verify Telemetry')
         for v in verifies:

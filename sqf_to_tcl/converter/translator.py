@@ -4,54 +4,156 @@ This module focuses on rules in the user's prompt: variable assignments, if,
 for-from-to-do, while, hint->puts, sleep->after, and comments.
 """
 from __future__ import annotations
-from typing import List
+from typing import List, Optional
 import re
 from pathlib import Path
 from textwrap import indent
 
-from ..parser.sqf_parser import Node, parse_sqf
+# Support both relative and absolute imports for flexibility
+try:
+    from ..parser.sqf_parser import Node, parse_sqf
+except ImportError:
+    # Fallback to absolute import when run directly or as standalone
+    from sqf_to_tcl.parser.sqf_parser import Node, parse_sqf
 
 
-def load_argument_database(db_path: str) -> dict:
+def _detect_encoding(file_path: Path) -> str:
+    """Try to detect file encoding automatically."""
+    encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'ascii', 'utf-16']
+    
+    for encoding in encodings:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                f.read(1024)  # Try to read first 1KB
+            return encoding
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    
+    # Fallback to utf-8
+    return 'utf-8'
+
+
+def load_argument_database(db_path: str, field_order: str = "command_priority_argument", validation_pattern: str | None = None, min_fields: int = 3) -> tuple[dict, list[str]]:
     """Load command argument definitions from a .txt database file.
     
-    Expected format: <command_name> <priority_index> <argument_name>
-    Example: CM00001 3 IRU_Drft_Bias
+    Universal parser that supports:
+    - Auto-detection of encoding (UTF-8, Latin-1, ASCII, etc.)
+    - Configurable field order (default: command priority argument)
+    - Format validation using regex patterns from rules.yaml
+    - Flexible parsing with whitespace handling
+    - Comments support (# at start of line)
+    - Empty lines ignored
     
-    Returns: {cmd_name: {priority_index: arg_name}}
+    Args:
+        db_path: Path to database .txt file
+        field_order: Field order specification (default: "command_priority_argument")
+                    Options: "command_priority_argument", "priority_command_argument", etc.
+        validation_pattern: Optional regex pattern to validate each line format
+        min_fields: Minimum number of fields required (default: 3)
+    
+    Expected format: <command_name> <priority_index> <argument_name>
+    Examples:
+        CM00001 3 IRU_Drft_Bias
+        TC74111 4 Block_ID
+        TC74111 3 Block_Offset
+    
+    Returns: (cmd_args_dict, validation_errors)
+        cmd_args_dict: {cmd_name: {priority_index: arg_name}}
+        validation_errors: List of validation error messages for invalid lines
     """
     cmd_args = {}
+    validation_errors = []
     db_file = Path(db_path)
     
     if not db_file.exists():
-        return cmd_args
+        return cmd_args, validation_errors
+    
+    # Auto-detect encoding
+    encoding = _detect_encoding(db_file)
+    
+    # Compile validation pattern if provided
+    validation_re = None
+    if validation_pattern:
+        try:
+            validation_re = re.compile(validation_pattern)
+        except re.error:
+            validation_re = None  # Invalid pattern, skip validation
     
     try:
-        with open(db_file, 'r', encoding='utf-8') as f:
-            for line in f:
+        with open(db_file, 'r', encoding=encoding) as f:
+            for line_num, line in enumerate(f, 1):
+                original_line = line
                 line = line.strip()
+                
+                # Skip empty lines and comments
                 if not line or line.startswith('#'):
                     continue
                 
-                # Parse: CM00001 3 IRU_Drft_Bias
+                # Validate format if pattern provided
+                if validation_re:
+                    if not validation_re.match(line):
+                        validation_errors.append(f"Line {line_num}: Invalid format - {line[:50]}")
+                        continue
+                
+                # Parse: command priority argument (default order)
+                # Support multiple spaces/tabs as separators
                 parts = line.split()
+                
+                # Check minimum fields requirement
+                if len(parts) < min_fields:
+                    validation_errors.append(f"Line {line_num}: Too few fields (expected {min_fields}, got {len(parts)}) - {line[:50]}")
+                    continue
+                
                 if len(parts) >= 3:
-                    cmd_name = parts[0]
-                    try:
-                        priority_idx = int(parts[1])
-                        arg_name = parts[2]
-                        
+                    # Default order: command priority argument
+                    if field_order == "command_priority_argument":
+                        cmd_name = parts[0]
+                        try:
+                            priority_idx = int(parts[1])
+                            arg_name = ' '.join(parts[2:])  # Join remaining parts as argument name (in case it has spaces)
+                        except (ValueError, IndexError):
+                            validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
+                            continue
+                    elif field_order == "priority_command_argument":
+                        try:
+                            priority_idx = int(parts[0])
+                            cmd_name = parts[1]
+                            arg_name = ' '.join(parts[2:])
+                        except (ValueError, IndexError):
+                            validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
+                            continue
+                    else:
+                        # Default to command_priority_argument
+                        cmd_name = parts[0]
+                        try:
+                            priority_idx = int(parts[1])
+                            arg_name = ' '.join(parts[2:])
+                        except (ValueError, IndexError):
+                            validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
+                            continue
+                    
+                    # Store in dictionary
+                    if cmd_name not in cmd_args:
+                        cmd_args[cmd_name] = {}
+                    cmd_args[cmd_name][priority_idx] = arg_name
+                    
+                elif len(parts) == 2:
+                    # Handle case where priority might be missing (optional)
+                    # Format: command argument (no priority)
+                    if min_fields <= 2:
+                        cmd_name = parts[0]
+                        arg_name = parts[1]
+                        # Use default priority 0 if priority is missing
                         if cmd_name not in cmd_args:
                             cmd_args[cmd_name] = {}
-                        cmd_args[cmd_name][priority_idx] = arg_name
-                    except ValueError:
-                        # Skip invalid priority index
-                        continue
+                        cmd_args[cmd_name][0] = arg_name
+                    else:
+                        validation_errors.append(f"Line {line_num}: Missing priority field - {line[:50]}")
+                    
     except Exception as e:
-        # Return empty dict on error, but could log warning
-        pass
+        validation_errors.append(f"Error reading database file: {str(e)}")
     
-    return cmd_args
+    return cmd_args, validation_errors
 
 
 def _sqf_var_to_tcl(v: str) -> str:
@@ -137,8 +239,7 @@ def translate_nodes(nodes: List[Node], debug: bool = False) -> str:
 
 def translate_text_block(text: str) -> str:
     """Translate a text block which may contain multiple SQF statements separated by semicolons."""
-    from ..parser.sqf_parser import parse_sqf
-
+    # Use parse_sqf that was already imported at module level
     nodes = parse_sqf(text)
     return translate_nodes(nodes)
 
@@ -196,8 +297,35 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
 
     # Load argument database if provided
     cmd_args = {}
+    db_field_order = "command_priority_argument"  # Default field order
+    validation_pattern = None
+    min_fields = 3
+    auto_lookup_enabled = True
+    command_detection_patterns = []
+    
+    # Check if rules specify database format
+    if rules and 'database' in rules:
+        db_config = rules.get('database', {})
+        db_field_order = db_config.get('field_order', 'command_priority_argument')
+        validation_pattern = db_config.get('validation_pattern')
+        min_fields = db_config.get('min_fields', 3)
+        
+        # Get auto-lookup settings
+        auto_lookup_config = db_config.get('auto_lookup', {})
+        auto_lookup_enabled = auto_lookup_config.get('enabled', True)
+        command_detection_patterns = db_config.get('command_detection_patterns', [])
+    
     if db_path:
-        cmd_args = load_argument_database(db_path)
+        cmd_args, validation_errors = load_argument_database(
+            db_path, 
+            field_order=db_field_order,
+            validation_pattern=validation_pattern,
+            min_fields=min_fields
+        )
+        # Store validation errors for potential reporting (could be used in GUI)
+        if validation_errors:
+            # For now, silently skip validation errors, but they're available for future use
+            pass
     
     send_cmds = []
     verifies = []
@@ -258,15 +386,45 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
         if not handled:
             # Try to parse: C CM00001 0x1 0xcf (command with hex values)
             # or: C CM00001 ; comment (simple command with comment)
+            # Also try automatic command detection if enabled
+            cmd_name = None
+            values_part = None
+            comment = None
+            
+            # First try the standard pattern
             m_cmd_with_values = re.match(r'^C\s+([A-Za-z0-9_]+)\s+(.+?)(?:\s*;\s*(.+))?$', line, re.I)
             if m_cmd_with_values:
                 cmd_name = m_cmd_with_values.group(1)
                 values_part = m_cmd_with_values.group(2).strip()
                 comment = (m_cmd_with_values.group(3) or '').strip()
-                
+            elif auto_lookup_enabled and command_detection_patterns:
+                # Try automatic command detection using patterns from rules
+                for pattern_config in command_detection_patterns:
+                    pattern = pattern_config.get('pattern')
+                    group = pattern_config.get('group', 1)
+                    if pattern:
+                        try:
+                            match = re.search(pattern, line, re.I)
+                            if match:
+                                cmd_name = match.group(group)
+                                # Try to extract values after command
+                                rest = line[match.end():].strip()
+                                if rest and not rest.startswith(';'):
+                                    values_part = rest.split(';')[0].strip()
+                                    comment_match = re.search(r';\s*(.+)', rest)
+                                    if comment_match:
+                                        comment = comment_match.group(1).strip()
+                                break
+                        except (re.error, IndexError):
+                            continue
+            
+            if cmd_name:
                 # Extract hex values (0x1, 0xcf, etc.) or other values
-                values = re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|\S+)', values_part)
+                values = []
+                if values_part:
+                    values = re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|\S+)', values_part)
                 
+                # Check if command exists in database (automatic lookup)
                 if values and cmd_name in cmd_args:
                     # Map values to arguments by priority index
                     # Smaller index = higher priority = first value
@@ -288,9 +446,13 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
                     else:
                         # Fallback if no arguments matched
                         send_cmds.append((cmd_name, comment))
+                elif auto_lookup_enabled and cmd_name in cmd_args and not values:
+                    # Command found in database but no values provided
+                    # Use simple format
+                    send_cmds.append((cmd_name, comment or ''))
                 else:
                     # Simple command format: C CM00001 ; comment
-                    send_cmds.append((cmd_name, comment))
+                    send_cmds.append((cmd_name, comment or ''))
                 continue
 
         # verify

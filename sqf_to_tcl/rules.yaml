@@ -17,3 +17,40 @@ verify:
 # titles: lines to ignore or treat as headers
 titles:
   - '^vehicle\s+'
+
+# database: configuration for argument database file
+database:
+  # Field order in database file
+  # Options: "command_priority_argument" (default), "priority_command_argument"
+  field_order: 'command_priority_argument'
+  # Encoding detection: auto (default), or specific: utf-8, latin-1, ascii, etc.
+  encoding: 'auto'
+  
+  # Format validation: pattern to validate each line in database file
+  # This helps ensure the database file follows the expected format
+  # Groups: command, priority, argument
+  validation_pattern: '^([A-Za-z0-9_]+)\s+(\d+)\s+([A-Za-z0-9_\s]+?)\s*$'
+  
+  # Optional: minimum number of fields required (default: 3)
+  min_fields: 3
+  
+  # Optional: pattern to detect command IDs in source files
+  # This pattern is used to automatically detect commands that may need arguments
+  # When a match is found, the tool will check the database for argument definitions
+  command_detection_patterns:
+    # Pattern for commands starting with C (e.g., "C CM00001 0x1 0xcf")
+    - pattern: '^C\s+([A-Za-z0-9_]+)'
+      group: 1  # The group number that contains the command ID
+    # Pattern for standalone command IDs (e.g., "CM00001 3 IRU_Drft_Bias" - when defining args)
+    - pattern: '^([A-Za-z0-9_]+)\s+\d+\s+[A-Za-z0-9_]+'
+      group: 1
+    # Pattern for command assignments (e.g., "command = CM00001")
+    - pattern: '\b([A-Z]{2}\d{5})\b'  # Matches patterns like CM00001, TC74111
+      group: 1
+  
+  # Optional: auto-lookup settings
+  auto_lookup:
+    # Enable automatic command lookup in database (default: true)
+    enabled: true
+    # If command is found in source but not in database, show warning (default: false)
+    warn_missing: false

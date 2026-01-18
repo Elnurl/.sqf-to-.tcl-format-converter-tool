@@ -18,6 +18,15 @@ import json
 from pathlib import Path
 from typing import Optional
 
+# Add parent directory to path if running gui.py directly (not as module)
+# This allows: python gui.py OR python -m sqf_to_tcl.gui
+if __name__ == '__main__':
+    # If running directly, add parent directory to sys.path
+    current_dir = Path(__file__).parent
+    parent_dir = current_dir.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QPlainTextEdit, QLabel, QFileDialog, QMessageBox,
@@ -31,7 +40,7 @@ from PyQt6.QtGui import (
 )
 
 # Use absolute import so it also works when frozen as a standalone .exe
-from sqf_to_tcl.converter.translator import convert_sqf_string_to_tcl, save_tcl_output
+from sqf_to_tcl.converter.translator import convert_sqf_string_to_tcl, save_tcl_output, load_argument_database
 
 
 class LineNumberArea(QWidget):
@@ -1060,7 +1069,7 @@ class SQFtoTCLApp(QMainWindow):
             )
 
     def load_database(self) -> None:
-        """Load argument database from .txt file."""
+        """Load argument database from .txt file with format validation."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             'Select argument database file',
@@ -1069,30 +1078,74 @@ class SQFtoTCLApp(QMainWindow):
         )
         if not path:
             return
+        
         try:
-            # Verify file format by reading first few lines
-            with open(path, 'r', encoding='utf-8') as f:
-                lines = [f.readline().strip() for _ in range(3)]
-                # Check if format looks correct (command priority argument)
-                valid = any(len(line.split()) >= 3 for line in lines if line)
-                if not valid and any(lines):
-                    QMessageBox.warning(
-                        self,
-                        'Format Warning',
-                        'File may not be in the expected format.\n'
-                        'Expected: <command> <priority> <argument>\n'
-                        'Example: CM00001 3 IRU_Drft_Bias'
-                    )
+            # Load rules.yaml to get validation settings if available
+            rules_path = self.rules_path
+            if not rules_path:
+                # Try default location
+                rules_path = Path(__file__).resolve().parent.parent / 'rules.yaml'
+            
+            validation_pattern = None
+            min_fields = 3
+            field_order = "command_priority_argument"
+            
+            if rules_path and Path(rules_path).exists():
+                try:
+                    import yaml
+                    with open(rules_path, 'r', encoding='utf-8') as f:
+                        rules = yaml.safe_load(f)
+                        if rules and 'database' in rules:
+                            db_config = rules.get('database', {})
+                            validation_pattern = db_config.get('validation_pattern')
+                            min_fields = db_config.get('min_fields', 3)
+                            field_order = db_config.get('field_order', 'command_priority_argument')
+                except Exception:
+                    pass  # Use defaults if rules can't be loaded
+            
+            # Load database with validation
+            cmd_args, validation_errors = load_argument_database(
+                path,
+                field_order=field_order,
+                validation_pattern=validation_pattern,
+                min_fields=min_fields
+            )
+            
+            # Show validation results
+            command_count = len(cmd_args)
+            total_args = sum(len(args) for args in cmd_args.values())
+            
+            if validation_errors:
+                error_msg = f'Database loaded with {len(validation_errors)} validation error(s):\n\n'
+                # Show first 10 errors
+                for err in validation_errors[:10]:
+                    error_msg += f'  • {err}\n'
+                if len(validation_errors) > 10:
+                    error_msg += f'\n... and {len(validation_errors) - 10} more error(s)'
+                
+                QMessageBox.warning(
+                    self,
+                    'Database Loaded with Warnings',
+                    f'Argument database loaded:\n{Path(path).name}\n\n'
+                    f'Commands found: {command_count}\n'
+                    f'Total arguments: {total_args}\n\n'
+                    f'{error_msg}'
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    'Database Loaded',
+                    f'Argument database loaded successfully:\n{Path(path).name}\n\n'
+                    f'Commands found: {command_count}\n'
+                    f'Total arguments: {total_args}\n\n'
+                    f'Format validation passed. All commands will use arguments from this database.\n'
+                    f'Path has been saved and will auto-load on next startup.'
+                )
+            
             self.db_path = path
             self.save_config()  # Save to cache
-            self.status_label.setText(f"Loaded database: {Path(path).name} (cached)")
-            QMessageBox.information(
-                self,
-                'Database Loaded',
-                f'Argument database loaded successfully:\n{Path(path).name}\n\n'
-                f'Commands will now use arguments from this database.\n'
-                f'Path has been saved and will auto-load on next startup.'
-            )
+            self.status_label.setText(f"Loaded database: {Path(path).name} ({command_count} commands, {total_args} arguments)")
+            
         except Exception as e:
             QMessageBox.critical(
                 self,

@@ -66,6 +66,13 @@ def _extract_values(values_part: str) -> list[str]:
     return re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|[A-Za-z0-9_]+|\S+)', v)
 
 
+def _strip_square_brackets(s: str) -> str:
+    """Remove square brackets from any emitted text (hard guarantee for output cleanliness)."""
+    if s is None:
+        return ''
+    return str(s).replace('[', '').replace(']', '')
+
+
 def load_argument_database(db_path: str, field_order: str = "command_priority_argument", validation_pattern: str | None = None, min_fields: int = 3) -> tuple[dict, list[str]]:
     """Load command argument definitions from a .txt database file.
     
@@ -430,7 +437,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
             if m_cmd_with_values:
                 cmd_name = _sanitize_cmd_name(m_cmd_with_values.group(1))
                 values_part = m_cmd_with_values.group(2).strip()
-                comment = (m_cmd_with_values.group(3) or '').strip()
+                comment = _strip_square_brackets((m_cmd_with_values.group(3) or '').strip())
             elif auto_lookup_enabled and command_detection_patterns:
                 # Try automatic command detection using patterns from rules
                 for pattern_config in command_detection_patterns:
@@ -447,7 +454,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
                                     values_part = rest.split(';')[0].strip()
                                     comment_match = re.search(r';\s*(.+)', rest)
                                     if comment_match:
-                                        comment = comment_match.group(1).strip()
+                                        comment = _strip_square_brackets(comment_match.group(1).strip())
                                 break
                         except (re.error, IndexError):
                             continue
@@ -485,7 +492,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
                     send_cmds.append((cmd_name, comment or ''))
                 else:
                     # Simple command format: C CM00001 ; comment
-                    send_cmds.append((cmd_name, comment or ''))
+                    send_cmds.append((cmd_name, _strip_square_brackets(comment or '')))
                 continue
 
         # verify
@@ -501,8 +508,8 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
             if mm:
                 var = mm.group(1)
                 val = mm.group(2)
-                label = (mm.group(3) or '').strip()
-                verifies.append((var, label, val))
+                label = _strip_square_brackets((mm.group(3) or '').strip())
+                verifies.append((_strip_square_brackets(var), label, _strip_square_brackets(val)))
                 continue
 
         if clean.upper() == 'END':
@@ -522,20 +529,20 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
         for sc in send_cmds:
             if isinstance(sc, tuple):
                 name, comment = sc
-                out_lines.append(f'        {name}     {comment}')
+                out_lines.append(f'        {_strip_square_brackets(name)}     {_strip_square_brackets(comment)}')
             elif isinstance(sc, str):
                 # String format (e.g., "CM00001 IRU_Scale_Factor=0x1 ; RW_Speed=0xcf")
-                out_lines.append(f'        {sc}')
+                out_lines.append(f'        {_strip_square_brackets(sc)}')
             else:
-                out_lines.append(str(sc))
+                out_lines.append(_strip_square_brackets(str(sc)))
     if verifies:
         out_lines.append('    Verify Telemetry')
         for v in verifies:
             if isinstance(v, tuple):
                 var, label, val = v
-                out_lines.append(f'            {var}: state :: Cnt {label} := {val} ')
+                out_lines.append(f'            {_strip_square_brackets(var)}: state :: Cnt {_strip_square_brackets(label)} := {_strip_square_brackets(val)} ')
             else:
-                out_lines.append(v)
+                out_lines.append(_strip_square_brackets(v))
         out_lines.append('        ')
     if seen_end:
         out_lines.append('        END')

@@ -33,6 +33,39 @@ def _detect_encoding(file_path: Path) -> str:
     return 'utf-8'
 
 
+def _sanitize_cmd_name(s: str) -> str:
+    """Normalize a command identifier by stripping surrounding punctuation/spaces."""
+    if s is None:
+        return ''
+    s = str(s).strip()
+    s = s.strip('[](){}')
+    s = s.strip().rstrip(';').strip()
+    return s
+
+
+def _sanitize_arg_name(s: str) -> str:
+    """Normalize an argument name from DB/source by removing [] and stray separators."""
+    if s is None:
+        return ''
+    s = str(s).strip()
+    s = s.strip('[](){}')
+    s = s.replace(';', '').strip()
+    if '=' in s:
+        s = s.split('=')[0].strip()
+    return s
+
+
+def _extract_values(values_part: str) -> list[str]:
+    """Extract values from a command line, tolerating brackets and commas."""
+    if not values_part:
+        return []
+    v = values_part.strip()
+    v = v.replace('[', ' ').replace(']', ' ')
+    v = v.replace(',', ' ')
+    v = v.replace('"', ' ').replace("'", ' ')
+    return re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|[A-Za-z0-9_]+|\S+)', v)
+
+
 def load_argument_database(db_path: str, field_order: str = "command_priority_argument", validation_pattern: str | None = None, min_fields: int = 3) -> tuple[dict, list[str]]:
     """Load command argument definitions from a .txt database file.
     
@@ -107,27 +140,27 @@ def load_argument_database(db_path: str, field_order: str = "command_priority_ar
                 if len(parts) >= 3:
                     # Default order: command priority argument
                     if field_order == "command_priority_argument":
-                        cmd_name = parts[0]
+                        cmd_name = _sanitize_cmd_name(parts[0])
                         try:
                             priority_idx = int(parts[1])
-                            arg_name = ' '.join(parts[2:])  # Join remaining parts as argument name (in case it has spaces)
+                            arg_name = _sanitize_arg_name(' '.join(parts[2:]))  # Join remaining parts as argument name (in case it has spaces)
                         except (ValueError, IndexError):
                             validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
                             continue
                     elif field_order == "priority_command_argument":
                         try:
                             priority_idx = int(parts[0])
-                            cmd_name = parts[1]
-                            arg_name = ' '.join(parts[2:])
+                            cmd_name = _sanitize_cmd_name(parts[1])
+                            arg_name = _sanitize_arg_name(' '.join(parts[2:]))
                         except (ValueError, IndexError):
                             validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
                             continue
                     else:
                         # Default to command_priority_argument
-                        cmd_name = parts[0]
+                        cmd_name = _sanitize_cmd_name(parts[0])
                         try:
                             priority_idx = int(parts[1])
-                            arg_name = ' '.join(parts[2:])
+                            arg_name = _sanitize_arg_name(' '.join(parts[2:]))
                         except (ValueError, IndexError):
                             validation_errors.append(f"Line {line_num}: Invalid priority index - {line[:50]}")
                             continue
@@ -141,8 +174,8 @@ def load_argument_database(db_path: str, field_order: str = "command_priority_ar
                     # Handle case where priority might be missing (optional)
                     # Format: command argument (no priority)
                     if min_fields <= 2:
-                        cmd_name = parts[0]
-                        arg_name = parts[1]
+                        cmd_name = _sanitize_cmd_name(parts[0])
+                        arg_name = _sanitize_arg_name(parts[1])
                         # Use default priority 0 if priority is missing
                         if cmd_name not in cmd_args:
                             cmd_args[cmd_name] = {}
@@ -363,11 +396,12 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
 
         # Parse command argument definitions: CM00001 3 IRU_Drft_Bias
         # Format: <command_name> <priority_index> <argument_name>
-        m_arg_def = re.match(r'^([A-Za-z0-9_]+)\s+(\d+)\s+([A-Za-z0-9_]+)\s*$', clean)
+        # Be tolerant: argument name might include [] or other characters; we'll sanitize.
+        m_arg_def = re.match(r'^([A-Za-z0-9_]+)\s+(\d+)\s+(.+?)\s*$', clean)
         if m_arg_def:
-            cmd_name = m_arg_def.group(1)
+            cmd_name = _sanitize_cmd_name(m_arg_def.group(1))
             priority_idx = int(m_arg_def.group(2))
-            arg_name = m_arg_def.group(3)
+            arg_name = _sanitize_arg_name(m_arg_def.group(3))
             if cmd_name not in cmd_args:
                 cmd_args[cmd_name] = {}
             cmd_args[cmd_name][priority_idx] = arg_name
@@ -394,7 +428,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
             # First try the standard pattern
             m_cmd_with_values = re.match(r'^C\s+([A-Za-z0-9_]+)\s+(.+?)(?:\s*;\s*(.+))?$', line, re.I)
             if m_cmd_with_values:
-                cmd_name = m_cmd_with_values.group(1)
+                cmd_name = _sanitize_cmd_name(m_cmd_with_values.group(1))
                 values_part = m_cmd_with_values.group(2).strip()
                 comment = (m_cmd_with_values.group(3) or '').strip()
             elif auto_lookup_enabled and command_detection_patterns:
@@ -406,7 +440,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
                         try:
                             match = re.search(pattern, line, re.I)
                             if match:
-                                cmd_name = match.group(group)
+                                cmd_name = _sanitize_cmd_name(match.group(group))
                                 # Try to extract values after command
                                 rest = line[match.end():].strip()
                                 if rest and not rest.startswith(';'):
@@ -420,9 +454,7 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
             
             if cmd_name:
                 # Extract hex values (0x1, 0xcf, etc.) or other values
-                values = []
-                if values_part:
-                    values = re.findall(r'(0x[0-9a-fA-F]+|[0-9]+|\S+)', values_part)
+                values = _extract_values(values_part or '')
                 
                 # Check if command exists in database (automatic lookup)
                 if values and cmd_name in cmd_args:
@@ -434,12 +466,13 @@ def convert_sqf_to_report(source: str, rules_path: str | None = None, db_path: s
                     for i, value in enumerate(values):
                         if i < len(sorted_indices):
                             priority_idx = sorted_indices[i]
-                            arg_name = cmd_args[cmd_name][priority_idx]
-                            arg_assignments.append(f'{arg_name}={value}')
+                            arg_name = _sanitize_arg_name(cmd_args[cmd_name][priority_idx])
+                            v_clean = str(value).strip().strip('[]').strip()
+                            arg_assignments.append(f'{arg_name}={v_clean}')
                     
                     # Format output: CM00001 IRU_Scale_Factor=0x1 ; RW_Speed=0xcf
                     if arg_assignments:
-                        output = f'{cmd_name} {" ; ".join(arg_assignments)}'
+                        output = f'{cmd_name} ' + ' ; '.join(arg_assignments)
                         if comment:
                             output += f' ; {comment}'
                         send_cmds.append(output)

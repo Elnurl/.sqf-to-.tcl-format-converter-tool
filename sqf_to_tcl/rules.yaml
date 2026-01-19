@@ -29,7 +29,8 @@ database:
   # Format validation: pattern to validate each line in database file
   # This helps ensure the database file follows the expected format
   # Groups: command, priority, argument
-  validation_pattern: '^([A-Za-z0-9_]+)\s+(\d+)\s+([A-Za-z0-9_\s]+?)\s*$'
+  # Note: we allow any argument text after the priority, because some DBs may include [] or separators.
+  validation_pattern: '^([A-Za-z0-9_]+)\s+(\d+)\s+(.+?)\s*$'
   
   # Optional: minimum number of fields required (default: 3)
   min_fields: 3

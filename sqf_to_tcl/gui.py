@@ -31,9 +31,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QPlainTextEdit, QLabel, QFileDialog, QMessageBox,
     QCheckBox, QSplitter, QFrame, QSizePolicy, QTextEdit,
-    QDialog, QLineEdit, QGroupBox, QScrollArea
+    QDialog, QLineEdit, QGroupBox, QScrollArea, QDateTimeEdit
 )
-from PyQt6.QtCore import Qt, QSize, QRect, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QRect, pyqtSignal, QDateTime
 from PyQt6.QtGui import (
     QFont, QPalette, QColor, QIcon, QTextCharFormat, QSyntaxHighlighter,
     QPainter, QTextFormat, QTextCursor, QTextDocument
@@ -591,6 +591,7 @@ class SQFtoTCLApp(QMainWindow):
         self.rules_path: Optional[str] = None
         self.db_path: Optional[str] = None
         self.find_replace_dialog: Optional[FindReplaceDialog] = None
+        self.revision_dialog: Optional[QDialog] = None
         self.config_file = self._get_config_path()
         self._config_loaded = False  # Flag to prevent saving during initialization
         self.init_ui()
@@ -876,6 +877,13 @@ class SQFtoTCLApp(QMainWindow):
         self.btn_save_output_as.clicked.connect(self.save_output_as)
         layout.addWidget(self.btn_save_output_as)
 
+        self.btn_revision = SecondaryButton("Add Revision")
+        self.btn_revision.setMinimumWidth(90)
+        self.btn_revision.setMaximumWidth(110)
+        self.btn_revision.setToolTip("Add a revision entry to the output")
+        self.btn_revision.clicked.connect(self.add_revision_entry)
+        layout.addWidget(self.btn_revision)
+
         layout.addStretch()
 
         # Zoom controls (right side)
@@ -1122,7 +1130,7 @@ class SQFtoTCLApp(QMainWindow):
                     error_msg += f'  • {err}\n'
                 if len(validation_errors) > 10:
                     error_msg += f'\n... and {len(validation_errors) - 10} more error(s)'
-                
+
                 QMessageBox.warning(
                     self,
                     'Database Loaded with Warnings',
@@ -1218,6 +1226,62 @@ class SQFtoTCLApp(QMainWindow):
                 'Save Error',
                 f'Failed to save output:\n{e}'
             )
+
+    def add_revision_entry(self) -> None:
+        """Open a dialog to insert a revision history entry into the output."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add Revision Entry")
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        # Date/time picker (default: now)
+        dt_label = QLabel("Date/Time:")
+        dt_label.setStyleSheet("color: #d4d4d4;")
+        layout.addWidget(dt_label)
+        dt_edit = QDateTimeEdit()
+        dt_edit.setDateTime(QDateTime.currentDateTime())
+        dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        dt_edit.setCalendarPopup(True)
+        dt_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
+        layout.addWidget(dt_edit)
+
+        # Change notes
+        notes_label = QLabel("Changes:")
+        notes_label.setStyleSheet("color: #d4d4d4;")
+        layout.addWidget(notes_label)
+        notes_edit = QTextEdit()
+        notes_edit.setPlaceholderText("What changed?")
+        notes_edit.setPlainText("Format changed")  # default text requested
+        notes_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
+        notes_edit.setFixedHeight(100)
+        layout.addWidget(notes_edit)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_ok = ModernButton("Add")
+        btn_cancel = SecondaryButton("Cancel")
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        layout.addLayout(btn_row)
+
+        def accept():
+            dt_str = dt_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+            notes = notes_edit.toPlainText().strip()
+            if not notes:
+                notes = "Format changed"
+            # Append to output editor
+            existing = self.output_editor.toPlainText()
+            entry = f"# Revision: {dt_str} - {notes}"
+            new_text = (existing.rstrip() + "\n" + entry + "\n").lstrip("\n")
+            self.output_editor.setPlainText(new_text)
+            dlg.accept()
+
+        btn_ok.clicked.connect(accept)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        dlg.exec()
     
     def zoom_in(self) -> None:
         """Zoom in both editors."""

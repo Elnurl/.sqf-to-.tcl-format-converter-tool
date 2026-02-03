@@ -1265,69 +1265,51 @@ class SQFtoTCLApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Add Revision History")
         dlg.setMinimumWidth(600)
+        dlg.setMinimumHeight(400)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
         # Instructions
-        info_label = QLabel("Add one or more revision entries. Use 'Add Row' to add multiple entries.")
+        info_label = QLabel("Select a date and add multiple change descriptions. Each line will become a separate revision entry with the same date.")
         info_label.setStyleSheet("color: #d4d4d4; font-size: 10px; padding-bottom: 5px;")
+        info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
-        # Table for multiple entries
-        table = QTableWidget()
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["Date", "Changes"])
-        table.horizontalHeader().setStyleSheet("""
-            QHeaderView::section {
-                background-color: #2d2d30;
-                color: #d4d4d4;
-                padding: 6px;
-                border: none;
-                border-bottom: 1px solid #3e3e3e;
-            }
-        """)
-        table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                border: 1px solid #3e3e3e;
-                gridline-color: #3e3e3e;
-            }
-            QTableWidget::item {
-                padding: 4px;
-            }
-            QTableWidget::item:selected {
-                background-color: #264f78;
-            }
-        """)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.setColumnWidth(0, 150)
-        table.setAlternatingRowColors(True)
+        # Date picker (single date for all entries)
+        date_label = QLabel("Date:")
+        date_label.setStyleSheet("color: #d4d4d4;")
+        layout.addWidget(date_label)
         
-        # Add initial row
-        table.setRowCount(1)
-        
-        # Date picker for first row
         date_edit = QDateEdit()
         date_edit.setDate(QDate.currentDate())
         date_edit.setDisplayFormat("yyyy-MM-dd")
         date_edit.setCalendarPopup(True)
-        date_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
-        table.setCellWidget(0, 0, date_edit)
+        date_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e; padding: 4px;")
+        layout.addWidget(date_edit)
+
+        # Changes text area (multi-line, each line = one revision entry)
+        changes_label = QLabel("Changes (one per line):")
+        changes_label.setStyleSheet("color: #d4d4d4;")
+        layout.addWidget(changes_label)
         
-        # Changes text for first row
-        notes_item = QTableWidgetItem("Format changed")
-        notes_item.setFlags(notes_item.flags() | Qt.ItemFlag.ItemIsEditable)
-        table.setItem(0, 1, notes_item)
-        
-        layout.addWidget(table)
+        changes_edit = QPlainTextEdit()
+        changes_edit.setPlaceholderText("Format changed\nAdd more changes, one per line...")
+        changes_edit.setPlainText("Format changed")  # default text
+        changes_edit.setStyleSheet("""
+            QPlainTextEdit {
+                color: #d4d4d4;
+                background: #2b2b2b;
+                border: 1px solid #3e3e3e;
+                padding: 6px;
+                font-family: Consolas, monospace;
+            }
+        """)
+        changes_edit.setMinimumHeight(150)
+        layout.addWidget(changes_edit)
 
         # Buttons row
         btn_row = QHBoxLayout()
-        btn_add_row = SecondaryButton("Add Row")
-        btn_add_row.clicked.connect(lambda: self._add_revision_row(table))
-        btn_row.addWidget(btn_add_row)
         btn_row.addStretch()
         btn_cancel = SecondaryButton("Cancel")
         btn_ok = ModernButton("Add All")
@@ -1336,28 +1318,20 @@ class SQFtoTCLApp(QMainWindow):
         layout.addLayout(btn_row)
 
         def accept():
+            # Get the selected date
+            date_str = date_edit.date().toString("yyyy-MM-dd")
+            
+            # Get all change lines
+            changes_text = changes_edit.toPlainText().strip()
+            if not changes_text:
+                changes_text = "Format changed"
+            
+            # Split by lines and create entries
             entries = []
-            for row in range(table.rowCount()):
-                date_widget = table.cellWidget(row, 0)
-                if date_widget:
-                    date_str = date_widget.date().toString("yyyy-MM-dd")
-                else:
-                    date_item = table.item(row, 0)
-                    if date_item:
-                        date_str = date_item.text()
-                    else:
-                        continue
-                
-                notes_item = table.item(row, 1)
-                if notes_item:
-                    notes = notes_item.text().strip()
-                else:
-                    notes = ""
-                
-                if not notes:
-                    notes = "Format changed"
-                
-                entries.append(f"# Revision: {date_str} - {notes}")
+            for line in changes_text.split('\n'):
+                line = line.strip()
+                if line:  # Only add non-empty lines
+                    entries.append(f"# Revision: {date_str} - {line}")
             
             if entries:
                 # Append to output editor
@@ -1366,31 +1340,13 @@ class SQFtoTCLApp(QMainWindow):
                 new_text = (existing.rstrip() + "\n" + entries_text + "\n").lstrip("\n")
                 self.output_editor.setPlainText(new_text)
                 dlg.accept()
+            else:
+                QMessageBox.warning(dlg, "No Entries", "Please enter at least one change description.")
 
         btn_ok.clicked.connect(accept)
         btn_cancel.clicked.connect(dlg.reject)
 
         dlg.exec()
-    
-    def _add_revision_row(self, table: QTableWidget) -> None:
-        """Add a new row to the revision table."""
-        from PyQt6.QtCore import QDate
-        
-        row = table.rowCount()
-        table.insertRow(row)
-        
-        # Date picker
-        date_edit = QDateEdit()
-        date_edit.setDate(QDate.currentDate())
-        date_edit.setDisplayFormat("yyyy-MM-dd")
-        date_edit.setCalendarPopup(True)
-        date_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
-        table.setCellWidget(row, 0, date_edit)
-        
-        # Changes text
-        notes_item = QTableWidgetItem("Format changed")
-        notes_item.setFlags(notes_item.flags() | Qt.ItemFlag.ItemIsEditable)
-        table.setItem(row, 1, notes_item)
     
     def clear_all(self) -> None:
         """Clear both input and output editors."""

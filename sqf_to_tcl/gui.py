@@ -31,9 +31,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QPlainTextEdit, QLabel, QFileDialog, QMessageBox,
     QCheckBox, QSplitter, QFrame, QSizePolicy, QTextEdit,
-    QDialog, QLineEdit, QGroupBox, QScrollArea, QDateTimeEdit
+    QDialog, QLineEdit, QGroupBox, QScrollArea, QDateTimeEdit, QDateEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import Qt, QSize, QRect, pyqtSignal, QDateTime
+from PyQt6.QtCore import Qt, QSize, QRect, pyqtSignal, QDateTime, QDate
 from PyQt6.QtGui import (
     QFont, QPalette, QColor, QIcon, QTextCharFormat, QSyntaxHighlighter,
     QPainter, QTextFormat, QTextCursor, QTextDocument
@@ -730,7 +731,10 @@ class SQFtoTCLApp(QMainWindow):
         splitter.setSizes([900, 900])
         main_layout.addWidget(splitter, stretch=1)
 
-        # Status bar
+        # Status bar with Clear button on the right
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("""
             QLabel {
@@ -739,7 +743,34 @@ class SQFtoTCLApp(QMainWindow):
                 font-size: 11px;
             }
         """)
-        main_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        
+        # Red Clear button at bottom right
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.setStyleSheet("""
+            QPushButton {
+                background-color: #c42b1c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: 500;
+                min-width: 70px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+            QPushButton:pressed {
+                background-color: #a0281a;
+            }
+        """)
+        self.btn_clear.clicked.connect(self.clear_all)
+        status_layout.addWidget(self.btn_clear)
+        
+        status_widget = QWidget()
+        status_widget.setLayout(status_layout)
+        main_layout.addWidget(status_widget)
 
     def create_toolbar(self) -> QFrame:
         """Create the top toolbar with buttons - compact and responsive."""
@@ -1228,60 +1259,154 @@ class SQFtoTCLApp(QMainWindow):
             )
 
     def add_revision_entry(self) -> None:
-        """Open a dialog to insert a revision history entry into the output."""
+        """Open a dialog to insert one or more revision history entries into the output."""
+        from PyQt6.QtCore import QDate
+        
         dlg = QDialog(self)
-        dlg.setWindowTitle("Add Revision Entry")
+        dlg.setWindowTitle("Add Revision History")
+        dlg.setMinimumWidth(600)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        # Date/time picker (default: now)
-        dt_label = QLabel("Date/Time:")
-        dt_label.setStyleSheet("color: #d4d4d4;")
-        layout.addWidget(dt_label)
-        dt_edit = QDateTimeEdit()
-        dt_edit.setDateTime(QDateTime.currentDateTime())
-        dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        dt_edit.setCalendarPopup(True)
-        dt_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
-        layout.addWidget(dt_edit)
+        # Instructions
+        info_label = QLabel("Add one or more revision entries. Use 'Add Row' to add multiple entries.")
+        info_label.setStyleSheet("color: #d4d4d4; font-size: 10px; padding-bottom: 5px;")
+        layout.addWidget(info_label)
 
-        # Change notes
-        notes_label = QLabel("Changes:")
-        notes_label.setStyleSheet("color: #d4d4d4;")
-        layout.addWidget(notes_label)
-        notes_edit = QTextEdit()
-        notes_edit.setPlaceholderText("What changed?")
-        notes_edit.setPlainText("Format changed")  # default text requested
-        notes_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
-        notes_edit.setFixedHeight(100)
-        layout.addWidget(notes_edit)
+        # Table for multiple entries
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Date", "Changes"])
+        table.horizontalHeader().setStyleSheet("""
+            QHeaderView::section {
+                background-color: #2d2d30;
+                color: #d4d4d4;
+                padding: 6px;
+                border: none;
+                border-bottom: 1px solid #3e3e3e;
+            }
+        """)
+        table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: 1px solid #3e3e3e;
+                gridline-color: #3e3e3e;
+            }
+            QTableWidget::item {
+                padding: 4px;
+            }
+            QTableWidget::item:selected {
+                background-color: #264f78;
+            }
+        """)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(0, 150)
+        table.setAlternatingRowColors(True)
+        
+        # Add initial row
+        table.setRowCount(1)
+        
+        # Date picker for first row
+        date_edit = QDateEdit()
+        date_edit.setDate(QDate.currentDate())
+        date_edit.setDisplayFormat("yyyy-MM-dd")
+        date_edit.setCalendarPopup(True)
+        date_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
+        table.setCellWidget(0, 0, date_edit)
+        
+        # Changes text for first row
+        notes_item = QTableWidgetItem("Format changed")
+        notes_item.setFlags(notes_item.flags() | Qt.ItemFlag.ItemIsEditable)
+        table.setItem(0, 1, notes_item)
+        
+        layout.addWidget(table)
 
-        # Buttons
+        # Buttons row
         btn_row = QHBoxLayout()
+        btn_add_row = SecondaryButton("Add Row")
+        btn_add_row.clicked.connect(lambda: self._add_revision_row(table))
+        btn_row.addWidget(btn_add_row)
         btn_row.addStretch()
-        btn_ok = ModernButton("Add")
         btn_cancel = SecondaryButton("Cancel")
+        btn_ok = ModernButton("Add All")
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_ok)
         layout.addLayout(btn_row)
 
         def accept():
-            dt_str = dt_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss")
-            notes = notes_edit.toPlainText().strip()
-            if not notes:
-                notes = "Format changed"
-            # Append to output editor
-            existing = self.output_editor.toPlainText()
-            entry = f"# Revision: {dt_str} - {notes}"
-            new_text = (existing.rstrip() + "\n" + entry + "\n").lstrip("\n")
-            self.output_editor.setPlainText(new_text)
-            dlg.accept()
+            entries = []
+            for row in range(table.rowCount()):
+                date_widget = table.cellWidget(row, 0)
+                if date_widget:
+                    date_str = date_widget.date().toString("yyyy-MM-dd")
+                else:
+                    date_item = table.item(row, 0)
+                    if date_item:
+                        date_str = date_item.text()
+                    else:
+                        continue
+                
+                notes_item = table.item(row, 1)
+                if notes_item:
+                    notes = notes_item.text().strip()
+                else:
+                    notes = ""
+                
+                if not notes:
+                    notes = "Format changed"
+                
+                entries.append(f"# Revision: {date_str} - {notes}")
+            
+            if entries:
+                # Append to output editor
+                existing = self.output_editor.toPlainText()
+                entries_text = "\n".join(entries)
+                new_text = (existing.rstrip() + "\n" + entries_text + "\n").lstrip("\n")
+                self.output_editor.setPlainText(new_text)
+                dlg.accept()
 
         btn_ok.clicked.connect(accept)
         btn_cancel.clicked.connect(dlg.reject)
 
         dlg.exec()
+    
+    def _add_revision_row(self, table: QTableWidget) -> None:
+        """Add a new row to the revision table."""
+        from PyQt6.QtCore import QDate
+        
+        row = table.rowCount()
+        table.insertRow(row)
+        
+        # Date picker
+        date_edit = QDateEdit()
+        date_edit.setDate(QDate.currentDate())
+        date_edit.setDisplayFormat("yyyy-MM-dd")
+        date_edit.setCalendarPopup(True)
+        date_edit.setStyleSheet("color: #d4d4d4; background: #2b2b2b; border: 1px solid #3e3e3e;")
+        table.setCellWidget(row, 0, date_edit)
+        
+        # Changes text
+        notes_item = QTableWidgetItem("Format changed")
+        notes_item.setFlags(notes_item.flags() | Qt.ItemFlag.ItemIsEditable)
+        table.setItem(row, 1, notes_item)
+    
+    def clear_all(self) -> None:
+        """Clear both input and output editors."""
+        reply = QMessageBox.question(
+            self,
+            'Clear All',
+            'Are you sure you want to clear both input and output?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.input_editor.clear()
+            self.output_editor.clear()
+            self.input_path = None
+            self.output_path = None
+            self.status_label.setText("Cleared")
     
     def zoom_in(self) -> None:
         """Zoom in both editors."""

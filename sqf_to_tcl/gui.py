@@ -1322,26 +1322,33 @@ class SQFtoTCLApp(QMainWindow):
             date_str = date_edit.date().toString("yyyy-MM-dd")
             
             # Get all change lines
-            changes_text = changes_edit.toPlainText().strip()
-            if not changes_text:
-                changes_text = "Format changed"
+            changes_text = changes_edit.toPlainText()
             
-            # Split by lines and create entries
+            # Split by lines (handle both \n and \r\n)
+            lines = changes_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+            
+            # Create entries - each non-empty line becomes a separate revision entry
             entries = []
-            for line in changes_text.split('\n'):
+            for line in lines:
                 line = line.strip()
                 if line:  # Only add non-empty lines
                     entries.append(f"# Revision: {date_str} - {line}")
             
-            if entries:
-                # Append to output editor
-                existing = self.output_editor.toPlainText()
-                entries_text = "\n".join(entries)
-                new_text = (existing.rstrip() + "\n" + entries_text + "\n").lstrip("\n")
-                self.output_editor.setPlainText(new_text)
-                dlg.accept()
+            # If no entries, use default
+            if not entries:
+                entries.append(f"# Revision: {date_str} - Format changed")
+            
+            # Append to output editor - ensure each entry is on its own line
+            existing = self.output_editor.toPlainText()
+            if existing.strip():
+                # Add a blank line before if there's existing content
+                entries_text = "\n" + "\n".join(entries)
             else:
-                QMessageBox.warning(dlg, "No Entries", "Please enter at least one change description.")
+                entries_text = "\n".join(entries)
+            
+            new_text = existing.rstrip() + entries_text
+            self.output_editor.setPlainText(new_text)
+            dlg.accept()
 
         btn_ok.clicked.connect(accept)
         btn_cancel.clicked.connect(dlg.reject)
